@@ -22,7 +22,8 @@ export default async function handler(req, res) {
             form.append('chat_id', CHAT_ID);
             if (caption) form.append('caption', Array.isArray(caption) ? caption[0] : caption);
             const file = Array.isArray(fileField) ? fileField[0] : fileField;
-            form.append(audio ? 'audio' : photo ? 'photo' : 'document', Buffer.from(file), { filename: file.name || 'file' });
+            const fieldName = audio ? 'audio' : photo ? 'photo' : 'document';
+            form.append(fieldName, Buffer.from(file), { filename: file.name || 'file' });
 
             const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${endpoint}`, {
                 method: 'POST',
